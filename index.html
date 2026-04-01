@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>Mermaid Editor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      height: 100%;
+      overflow: hidden;
+    }
+
+    :root {
+      --bg-primary: #FDFBF7;
+      --bg-secondary: #F5F0E8;
+      --bg-tertiary: #EDE6D9;
+      --border: #D9CFC0;
+      --border-light: #E8E0D2;
+      --text-primary: #3D3929;
+      --text-secondary: #6B6353;
+      --text-muted: #9B917D;
+      --accent: #C96442;
+      --accent-hover: #B5573A;
+      --accent-light: #F0D9CF;
+      --accent-subtle: #E8C4B4;
+      --node-bg: #FDF8F0;
+      --node-border: #C96442;
+      --node-text: #3D3929;
+      --purple: #8B6CC1;
+      --grid-dot: #D9CFC0;
+    }
+
+    body {
+      font-family: 'Segoe UI', -apple-system, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-columns: 300px 1fr 260px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 0;
+      transition: grid-template-columns 0.25s ease;
+    }
+
+    body.left-collapsed {
+      grid-template-columns: 0px 1fr 260px;
+    }
+
+    body.right-collapsed {
+      grid-template-columns: 300px 1fr 0px;
+    }
+
+    body.left-collapsed.right-collapsed {
+      grid-template-columns: 0px 1fr 0px;
+    }
+
+    /* Tab Bar */
+    #tab-bar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: end;
+      gap: 2px;
+      padding: 6px 12px 0;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+      overflow-y: hidden;
+      min-height: 40px;
+      scrollbar-width: thin;
+    }
+
+    #editor-panel,
+    #canvas-panel,
+    #props-panel {
+      min-height: 0;
+      min-width: 0;
+    }
+
+    #tabs-container {
+      display: flex;
+      gap: 2px;
+      align-items: end;
+    }
+
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-secondary);
+      transition: background 0.15s;
+      white-space: nowrap;
+      max-width: 180px;
+      position: relative;
+      top: 1px;
+    }
+
+    .tab:hover { background: var(--bg-primary); }
+
+    .tab.active {
+      background: var(--bg-primary);
+      color: var(--accent);
+      font-weight: 600;
+      border-color: var(--border);
+    }
+
+    .tab-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .tab-name[contenteditable="true"] {
+      outline: 1px solid var(--accent);
+      border-radius: 2px;
+      padding: 0 2px;
+      min-width: 30px;
+    }
+
+    .tab-close {
+      font-size: 14px;
+      line-height: 1;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    .tab-close:hover {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    #btn-add-tab {
+      width: 28px;
+      height: 28px;
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      background: none;
+      cursor: pointer;
+      font-size: 16px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-left: 4px;
+    }
+
+    #btn-add-tab:hover {
+      background: var(--accent-light);
+      color: var(--accent);
+      border-color: var(--accent-subtle);
+    }
+
+    /* Collapse Toggle Buttons — inside canvas-panel */
+    .panel-toggle {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 20px;
+      height: 48px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      z-index: 10;
+      transition: background 0.15s;
+      padding: 0;
+    }
+
+    .panel-toggle:hover {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    #toggle-left {
+      left: 0;
+      border-radius: 0 6px 6px 0;
+      border-left: none;
+    }
+
+    #toggle-right {
+      right: 0;
+      border-radius: 6px 0 0 6px;
+      border-right: none;
+    }
+
+    /* Left Panel */
+    #editor-panel {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+      transition: padding 0.25s ease, opacity 0.2s ease;
+    }
+
+    body.left-collapsed #editor-panel {
+      padding: 0;
+      border-right: none;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #editor-panel h2 {
+      font-size: 13px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: 700;
+    }
+
+    #editor {
+      flex: 1;
+      min-height: 0;
+      resize: none;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      tab-size: 2;
+    }
+
+    #editor:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+    .btn {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: all 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--border-light); }
+
+    .btn-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .control-group label { color: var(--text-secondary); }
+
+    .control-group input[type="number"] {
+      width: 56px;
+      padding: 4px 6px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font-size: 12px;
+    }
+
+    .control-group input[type="checkbox"] {
+      accent-color: var(--accent);
+    }
+
+    .section-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 4px 0;
+    }
+
+    /* Center Panel */
+    #canvas-panel {
+      position: relative;
+      overflow: hidden;
+      background: var(--bg-primary);
+      cursor: default;
+    }
+
+    #canvas-panel.panning {
+      cursor: grabbing;
+    }
+
+    #canvas-panel {
+      background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+
+    #canvas {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    #canvas svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    #canvas .node { cursor: grab; }
+    #canvas .node.dragging { cursor: grabbing; }
+
+    #canvas .node.selected > rect,
+    #canvas .node.selected > polygon,
+    #canvas .node.selected > circle,
+    #canvas .node.selected > .basic {
+      filter: drop-shadow(0 0 6px var(--accent));
+    }
+
+    .error {
+      color: #C04030;
+      padding: 20px;
+      font-family: monospace;
+      white-space: pre-wrap;
+    }
+
+    /* Right Panel */
+    #props-panel {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 14px;
+      background: var(--bg-secondary);
+      border-left: 1px solid var(--border);
+      overflow-y: auto;
+      overflow-x: hidden;
+      transition: padding 0.25s ease, opacity 0.2s ease;
+    }
+
+    body.right-collapsed #props-panel {
+      padding: 0;
+      border-left: none;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #props-panel h2 {
+      font-size: 13px;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: 700;
+    }
+
+    .props-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .props-section h3 {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    #selected-node-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--purple);
+      min-height: 22px;
+    }
+
+    .no-selection {
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 13px;
+      font-weight: normal;
+    }
+
+    .color-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .color-row label {
+      width: 36px;
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+
+    .color-row input[type="color"] {
+      width: 32px;
+      height: 26px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--bg-primary);
+      cursor: pointer;
+      padding: 2px;
+    }
+
+    .color-row input[type="color"]::-webkit-color-swatch-wrapper { padding: 1px; }
+    .color-row input[type="color"]::-webkit-color-swatch { border: none; border-radius: 3px; }
+
+    .color-row .color-hex {
+      font-family: 'Cascadia Code', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    #color-controls { display: none; }
+    #color-controls.active {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .export-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* Language Selector */
+    .lang-section {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .lang-section label {
+      color: var(--text-secondary);
+    }
+
+    #lang-select {
+      padding: 3px 6px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Tab Bar -->
+  <div id="tab-bar">
+    <div id="tabs-container"></div>
+    <button id="btn-add-tab" data-i18n-title="addTab" title="新增分頁">+</button>
+  </div>
+
+  <!-- Left Panel -->
+  <div id="editor-panel">
+    <h2 data-i18n="editorTitle">MERMAID 編輯器</h2>
+    <textarea id="editor"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-render" data-i18n="render">渲染</button>
+      <button class="btn btn-secondary" id="btn-relayout" data-i18n="relayout">重新排版</button>
+    </div>
+    <hr class="section-divider">
+    <div class="control-group">
+      <label data-i18n="grid">網格:</label>
+      <input type="number" id="grid-size" value="20" min="5" max="100" step="5">
+      <label>px</label>
+    </div>
+    <div class="control-group">
+      <input type="checkbox" id="show-grid" checked>
+      <label for="show-grid" data-i18n="showGrid">顯示網格</label>
+    </div>
+    <div class="control-group">
+      <input type="checkbox" id="snap-enabled" checked>
+      <label for="snap-enabled" data-i18n="snapGrid">吸附網格</label>
+    </div>
+    <hr class="section-divider">
+    <div class="lang-section">
+      <label data-i18n="langLabel">語言:</label>
+      <select id="lang-select">
+        <option value="en">English</option>
+        <option value="zh-TW" selected>繁體中文</option>
+        <option value="zh-CN">简体中文</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Center Panel -->
+  <div id="canvas-panel">
+    <button id="toggle-left" class="panel-toggle" data-i18n-title="toggleEditor" title="收合/展開編輯器">&#9664;</button>
+    <button id="toggle-right" class="panel-toggle" data-i18n-title="toggleProps" title="收合/展開屬性">&#9654;</button>
+    <div id="canvas"></div>
+  </div>
+
+  <!-- Right Panel -->
+  <div id="props-panel">
+    <h2 data-i18n="propsTitle">屬性</h2>
+
+    <div class="props-section">
+      <h3 data-i18n="selectedNode">選取的節點</h3>
+      <div id="selected-node-name" class="no-selection" data-i18n="noSelection">未選取</div>
+    </div>
+
+    <div id="color-controls">
+      <div class="color-row">
+        <label data-i18n="colorBg">背景</label>
+        <input type="color" id="color-bg" value="#FDF8F0">
+        <span class="color-hex" id="hex-bg">#FDF8F0</span>
+      </div>
+      <div class="color-row">
+        <label data-i18n="colorBorder">邊框</label>
+        <input type="color" id="color-border" value="#C96442">
+        <span class="color-hex" id="hex-border">#C96442</span>
+      </div>
+      <div class="color-row">
+        <label data-i18n="colorText">文字</label>
+        <input type="color" id="color-text" value="#3D3929">
+        <span class="color-hex" id="hex-text">#3D3929</span>
+      </div>
+      <button class="btn btn-secondary" id="btn-reset-color" data-i18n="resetColor" style="margin-top: 4px;">重設顏色</button>
+    </div>
+
+    <hr class="section-divider">
+
+    <div class="props-section export-section">
+      <h3 data-i18n="exportTitle">匯出</h3>
+      <button class="btn btn-secondary" id="btn-export-svg" data-i18n="exportSvg">下載 SVG</button>
+      <button class="btn btn-secondary" id="btn-export-png" data-i18n="exportPng">下載 PNG</button>
+    </div>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
