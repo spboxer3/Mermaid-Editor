@@ -306,6 +306,8 @@
       overflow: hidden;
       background: var(--bg-primary);
       cursor: default;
+      user-select: none;
+      -webkit-user-select: none;
     }
 
     #canvas-panel.panning {
@@ -318,14 +320,33 @@
     }
 
     #canvas {
-      width: 100%;
-      height: 100%;
-      position: relative;
+      position: absolute;
+      inset: 0;
+      width: max-content;
+      height: max-content;
+      min-width: 100%;
+      min-height: 100%;
+      transform-origin: 0 0;
     }
 
     #canvas svg {
-      width: 100%;
-      height: 100%;
+      display: block;
+      width: auto;
+      height: auto;
+      min-width: 100%;
+      min-height: 100%;
+      overflow: visible;
+    }
+
+    #canvas svg text,
+    #canvas svg tspan,
+    #canvas svg foreignObject,
+    #canvas svg foreignObject *,
+    #canvas .label,
+    #canvas .nodeLabel {
+      user-select: none;
+      -webkit-user-select: none;
+      pointer-events: none;
     }
 
     #canvas .node { cursor: grab; }
@@ -338,11 +359,57 @@
       filter: drop-shadow(0 0 6px var(--accent));
     }
 
+    .selection-marquee {
+      position: absolute;
+      border: 1px solid rgba(201, 100, 66, 0.9);
+      background: rgba(201, 100, 66, 0.14);
+      border-radius: 4px;
+      pointer-events: none;
+      display: none;
+      z-index: 6;
+    }
+
     .error {
       color: #C04030;
       padding: 20px;
       font-family: monospace;
       white-space: pre-wrap;
+    }
+
+    /* Edge click hit area — invisible wider path for easy clicking */
+    .edge-hit-area {
+      fill: none;
+      cursor: pointer;
+      pointer-events: stroke;
+    }
+
+    .edge-hit-area:hover + path.flowchart-link,
+    .edge-hit-area:hover {
+      filter: drop-shadow(0 0 3px var(--purple));
+    }
+
+    /* Selected edge */
+    #canvas path.flowchart-link.edge-selected {
+      stroke: var(--purple) !important;
+      stroke-width: 3 !important;
+      filter: drop-shadow(0 0 4px var(--purple));
+    }
+
+    /* Floating edge label editor */
+    .edge-label-editor {
+      position: absolute;
+      z-index: 100;
+      background: var(--bg-primary);
+      border: 2px solid var(--purple);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 13px;
+      font-family: 'Segoe UI', -apple-system, sans-serif;
+      color: var(--text-primary);
+      min-width: 80px;
+      outline: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      transform: translate(-50%, -50%);
     }
 
     /* Right Panel */
@@ -468,6 +535,335 @@
       font-size: 12px;
       cursor: pointer;
     }
+
+    /* Mode Toggle */
+    .mode-toggle {
+      display: flex;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .mode-toggle button {
+      flex: 1;
+      padding: 6px 12px;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      transition: all 0.15s;
+    }
+
+    .mode-toggle button.active {
+      background: var(--accent);
+      color: #fff;
+      border-radius: 6px;
+    }
+
+    .mode-toggle button:not(.active):hover {
+      color: var(--text-primary);
+      background: var(--bg-primary);
+    }
+
+    /* Visual Toolbox */
+    #visual-panel {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+
+    #visual-panel.active {
+      display: flex;
+    }
+
+    #code-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    #code-panel.hidden {
+      display: none;
+    }
+
+    .toolbox-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .toolbox-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 10px 6px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: grab;
+      transition: all 0.15s;
+      user-select: none;
+    }
+
+    .toolbox-item:hover {
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .toolbox-item:active {
+      cursor: grabbing;
+      transform: scale(0.95);
+    }
+
+    .toolbox-item svg {
+      width: 48px;
+      height: 32px;
+    }
+
+    .toolbox-item svg .shape {
+      fill: var(--node-bg);
+      stroke: var(--node-border);
+      stroke-width: 1.5;
+    }
+
+    .toolbox-item span {
+      font-size: 10px;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+
+    .toolbox-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-style: italic;
+      text-align: center;
+    }
+
+    /* Visual editor controls */
+    .visual-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .visual-node-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+
+    .visual-node-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      font-size: 11px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    .visual-node-item .node-type-badge {
+      font-size: 9px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: var(--accent-light);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .visual-node-item .node-label-text {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .visual-node-item .node-delete-btn {
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    .visual-node-item .node-delete-btn:hover {
+      color: #C04030;
+      background: #fde8e5;
+    }
+
+    /* Edge list */
+    .visual-edge-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+
+    .visual-edge-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      font-size: 11px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+
+    .visual-edge-item .edge-nodes {
+      color: var(--text-secondary);
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .visual-edge-item .edge-arrow {
+      color: var(--text-muted);
+    }
+
+    .visual-edge-item .edge-label-text {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--purple);
+      font-style: italic;
+      min-width: 20px;
+    }
+
+    .visual-edge-item .edge-label-text:empty::before {
+      content: '—';
+      color: var(--text-muted);
+    }
+
+    .visual-edge-item .edge-label-text[contenteditable="true"] {
+      outline: 1px solid var(--accent);
+      border-radius: 2px;
+      padding: 0 2px;
+      font-style: normal;
+    }
+
+    .visual-edge-item .edge-delete-btn {
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 0 2px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .visual-edge-item .edge-delete-btn:hover {
+      color: #C04030;
+      background: #fde8e5;
+    }
+
+    /* Connection mode indicator */
+    .connect-bar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: var(--purple);
+      color: #fff;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .connect-bar.active {
+      display: flex;
+    }
+
+    .connect-bar button {
+      padding: 2px 8px;
+      background: rgba(255,255,255,0.2);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .connect-bar button:hover {
+      background: rgba(255,255,255,0.35);
+    }
+
+    /* Drag ghost preview */
+    .drag-ghost {
+      position: fixed;
+      pointer-events: none;
+      opacity: 0.7;
+      z-index: 9999;
+      transform: translate(-50%, -50%);
+    }
+
+    /* Canvas drop highlight */
+    #canvas-panel.drop-hover {
+      outline: 3px dashed var(--accent);
+      outline-offset: -3px;
+    }
+
+    /* Connection source highlight */
+    #canvas .node.connect-source > rect,
+    #canvas .node.connect-source > polygon,
+    #canvas .node.connect-source > circle,
+    #canvas .node.connect-source > .basic {
+      filter: drop-shadow(0 0 8px var(--purple));
+      stroke: var(--purple) !important;
+      stroke-width: 3 !important;
+    }
+
+    /* Temporary connection line */
+    .temp-connection-line {
+      stroke: var(--purple);
+      stroke-width: 2.5;
+      stroke-dasharray: 6 3;
+      fill: none;
+      pointer-events: none;
+    }
+
+    /* Drop target highlight during connection */
+    #canvas .node.connect-target > rect,
+    #canvas .node.connect-target > polygon,
+    #canvas .node.connect-target > circle,
+    #canvas .node.connect-target > .basic {
+      filter: drop-shadow(0 0 6px var(--purple));
+      stroke: var(--purple) !important;
+    }
+
+    /* Direction selector */
+    .direction-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .direction-row label {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .direction-row select {
+      padding: 3px 6px;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font-size: 12px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -481,11 +877,83 @@
   <!-- Left Panel -->
   <div id="editor-panel">
     <h2 data-i18n="editorTitle">MERMAID 編輯器</h2>
-    <textarea id="editor"></textarea>
-    <div class="btn-row">
-      <button class="btn btn-primary" id="btn-render" data-i18n="render">渲染</button>
-      <button class="btn btn-secondary" id="btn-relayout" data-i18n="relayout">重新排版</button>
+
+    <!-- Mode Toggle -->
+    <div class="mode-toggle">
+      <button id="mode-code" class="active" data-i18n="modeCode">程式碼</button>
+      <button id="mode-visual" data-i18n="modeVisual">視覺化</button>
     </div>
+
+    <!-- Code Mode -->
+    <div id="code-panel">
+      <textarea id="editor"></textarea>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-render" data-i18n="render">渲染</button>
+        <button class="btn btn-secondary" id="btn-relayout" data-i18n="relayout">重新排版</button>
+      </div>
+    </div>
+
+    <!-- Visual Mode -->
+    <div id="visual-panel">
+      <div class="direction-row">
+        <label data-i18n="visualDirection">方向：</label>
+        <select id="visual-direction">
+          <option value="TD" data-i18n="dirTD">上→下</option>
+          <option value="LR" data-i18n="dirLR">左→右</option>
+        </select>
+      </div>
+
+      <h3 style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;" data-i18n="toolboxTitle">元素</h3>
+      <div class="toolbox-grid">
+        <div class="toolbox-item" draggable="true" data-node-type="process">
+          <svg viewBox="0 0 48 32"><rect class="shape" x="2" y="2" width="44" height="28" rx="3"/></svg>
+          <span data-i18n="toolProcess">處理</span>
+        </div>
+        <div class="toolbox-item" draggable="true" data-node-type="decision">
+          <svg viewBox="0 0 48 32"><polygon class="shape" points="24,1 47,16 24,31 1,16"/></svg>
+          <span data-i18n="toolDecision">判斷</span>
+        </div>
+        <div class="toolbox-item" draggable="true" data-node-type="terminal">
+          <svg viewBox="0 0 48 32"><rect class="shape" x="2" y="2" width="44" height="28" rx="14"/></svg>
+          <span data-i18n="toolTerminal">終端</span>
+        </div>
+        <div class="toolbox-item" draggable="true" data-node-type="io">
+          <svg viewBox="0 0 48 32"><polygon class="shape" points="8,30 2,2 40,2 46,30"/></svg>
+          <span data-i18n="toolIO">輸入/輸出</span>
+        </div>
+        <div class="toolbox-item" draggable="true" data-node-type="subroutine">
+          <svg viewBox="0 0 48 32"><rect class="shape" x="2" y="2" width="44" height="28" rx="3"/><line x1="7" y1="2" x2="7" y2="30" stroke="var(--node-border)" stroke-width="1.5"/><line x1="41" y1="2" x2="41" y2="30" stroke="var(--node-border)" stroke-width="1.5"/></svg>
+          <span data-i18n="toolSubroutine">子程序</span>
+        </div>
+        <div class="toolbox-item" draggable="true" data-node-type="database">
+          <svg viewBox="0 0 48 32"><ellipse class="shape" cx="24" cy="8" rx="20" ry="6"/><rect class="shape" x="4" y="8" width="40" height="18" style="stroke:none"/><line x1="4" y1="8" x2="4" y2="26" stroke="var(--node-border)" stroke-width="1.5"/><line x1="44" y1="8" x2="44" y2="26" stroke="var(--node-border)" stroke-width="1.5"/><ellipse class="shape" cx="24" cy="26" rx="20" ry="6" style="fill:none"/></svg>
+          <span data-i18n="toolDatabase">資料庫</span>
+        </div>
+      </div>
+      <div class="toolbox-hint" data-i18n="toolboxHint">拖曳元素至畫布</div>
+      <div class="toolbox-hint" data-i18n="connectShiftHint">Shift + 拖曳節點以建立連線</div>
+
+      <hr class="section-divider">
+
+      <!-- Connection status bar (shown during Shift+drag) -->
+      <div class="connect-bar" id="connect-bar">
+        <span data-i18n="connectHint">拖曳至目標節點完成連線</span>
+        <button id="btn-connect-cancel" data-i18n="connectCancel">取消</button>
+      </div>
+
+      <hr class="section-divider">
+
+      <!-- Visual node list -->
+      <h3 style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;" data-i18n="nodeListTitle">節點列表</h3>
+      <div class="visual-node-list" id="visual-node-list"></div>
+
+      <hr class="section-divider">
+
+      <!-- Visual edge list -->
+      <h3 style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;" data-i18n="edgeListTitle">連線列表</h3>
+      <div class="visual-edge-list" id="visual-edge-list"></div>
+    </div>
+
     <hr class="section-divider">
     <div class="control-group">
       <label data-i18n="grid">網格:</label>

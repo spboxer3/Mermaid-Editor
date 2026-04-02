@@ -23,8 +23,21 @@ const btnExportPng = document.getElementById('btn-export-png');
 const tabsContainer = document.getElementById('tabs-container');
 const btnAddTab = document.getElementById('btn-add-tab');
 
+// Visual editor DOM references
+const modeCodeBtn = document.getElementById('mode-code');
+const modeVisualBtn = document.getElementById('mode-visual');
+const codePanel = document.getElementById('code-panel');
+const visualPanel = document.getElementById('visual-panel');
+const visualDirectionSelect = document.getElementById('visual-direction');
+const connectBar = document.getElementById('connect-bar');
+const btnConnectCancel = document.getElementById('btn-connect-cancel');
+const visualNodeList = document.getElementById('visual-node-list');
+
 // --- Tab System ---
 const langSelect = document.getElementById('lang-select');
+
+// --- Editor Mode ---
+let editorMode = 'code'; // 'code' or 'visual'
 
 function getDefaultCode() {
   return t('defaultCode');
@@ -43,8 +56,14 @@ function createTabState(name, code) {
     nodeColors: new Map(),
     nodePositions: new Map(),
     selectedNodeLabel: null,
+    selectedNodeLabels: [],
     edgeMap: [],
     renderCounter: 0,
+    // Visual editor model
+    visualNodes: [],   // [{id, type, label}]
+    visualEdges: [],   // [{from, to, label}]
+    visualDirection: 'TD',
+    visualIdCounter: 0,
   };
 }
 
@@ -126,8 +145,14 @@ function switchTab(tabId) {
   const tab = getActiveTab();
   editor.value = tab.code;
   deselectNode();
+  exitConnectMode();
   renderTabBar();
   renderDiagram(true);
+  if (editorMode === 'visual') {
+    visualDirectionSelect.value = tab.visualDirection || 'TD';
+    renderVisualNodeList();
+    renderVisualEdgeList();
+  }
   scheduleSave();
 }
 
@@ -198,19 +223,61 @@ async function renderDiagram(preservePositions = true) {
   const code = editor.value.trim();
   if (!code) return;
 
+  // If preservePositions is requested and the canvas is currently showing this tab,
+  // capture moved nodes' absolute positions so we can rebase their deltas after Mermaid re-layout.
+  const shouldRebaseMovedNodes =
+    preservePositions && canvas.dataset.renderTabId === String(tab.id) && tab.nodePositions.size > 0;
+  const movedNodeAbsPositions = shouldRebaseMovedNodes ? new Map() : null;
+  if (movedNodeAbsPositions) {
+    for (const label of tab.nodePositions.keys()) {
+      const node = findNodeByLabel(label);
+      if (!node) continue;
+      movedNodeAbsPositions.set(label, parseTranslate(node));
+    }
+  }
+
   tab.renderCounter++;
-  const id = `mermaid-${tab.id}-${tab.renderCounter}`;
+  const renderSeq = tab.renderCounter;
+  const renderTabId = tab.id;
+  const id = `mermaid-${renderTabId}-${renderSeq}`;
 
   try {
     const { svg } = await mermaid.default.render(id, code);
+
+    // Ignore stale renders (async Mermaid render can resolve out of order).
+    const currentTab = getActiveTab();
+    if (!currentTab || currentTab.id !== renderTabId) return;
+    if (currentTab.renderCounter !== renderSeq) return;
+
     canvas.innerHTML = svg;
+    canvas.dataset.renderTabId = String(renderTabId);
     buildEdgeMap();
-    if (preservePositions) restoreNodePositions();
+
+    if (preservePositions) {
+      if (movedNodeAbsPositions && movedNodeAbsPositions.size > 0) {
+        // Rebase deltas to the new Mermaid layout baseline.
+        currentTab.nodePositions.clear();
+        for (const [label, oldPos] of movedNodeAbsPositions) {
+          const node = findNodeByLabel(label);
+          if (!node) continue;
+          const basePos = parseTranslate(node);
+          currentTab.nodePositions.set(label, { dx: oldPos.x - basePos.x, dy: oldPos.y - basePos.y });
+        }
+      }
+      restoreNodePositions();
+    }
+
     applyColorOverrides();
     attachDragToNodes();
     attachClickToNodes();
+    attachEdgeInteractions();
     if (tab.selectedNodeLabel) highlightSelectedNode();
   } catch (err) {
+    // Same stale-render guard for errors: don't overwrite a newer successful render.
+    const currentTab = getActiveTab();
+    if (!currentTab || currentTab.id !== renderTabId) return;
+    if (currentTab.renderCounter !== renderSeq) return;
+
     const errPre = document.createElement('pre');
     errPre.className = 'error';
     errPre.textContent = err.message;
@@ -232,6 +299,10 @@ function findNodeByLabel(label) {
     if (getNodeLabel(node) === label) return node;
   }
   return null;
+}
+
+function clearSelectedNodeClasses() {
+  canvas.querySelectorAll('.node.selected').forEach((node) => node.classList.remove('selected'));
 }
 
 function getSvgScale() {
@@ -424,6 +495,28 @@ function updateAllEdges() {
 
 // --- Drag and Drop ---
 
+// When nodes are draggable, a "click" often produces both:
+// - interact.js drag end (with tiny movement), and
+// - a native DOM click that bubbles to the canvas listener.
+// We handle node-click behavior in the interact.js end handler, so we must suppress the
+// immediately-following DOM click to avoid double-processing (e.g. Shift+Click connect cancel).
+let _suppressNextCanvasNodeClickLabel = null;
+function suppressNextCanvasNodeClick(label) {
+  _suppressNextCanvasNodeClickLabel = label;
+  // Clear on next tick even if no click fires, so we don't suppress unrelated future clicks.
+  setTimeout(() => {
+    if (_suppressNextCanvasNodeClickLabel === label) _suppressNextCanvasNodeClickLabel = null;
+  }, 0);
+}
+
+function consumeSuppressedCanvasNodeClick(nodeEl) {
+  if (!_suppressNextCanvasNodeClickLabel || !nodeEl) return false;
+  const label = getNodeLabel(nodeEl);
+  if (label !== _suppressNextCanvasNodeClickLabel) return false;
+  _suppressNextCanvasNodeClickLabel = null;
+  return true;
+}
+
 function attachDragToNodes() {
   try { interact.default('.node').unset(); } catch (e) {}
 
@@ -440,20 +533,90 @@ function attachDragToNodes() {
     }));
   }
 
+  // Track the last highlighted target during connection drag
+  let _connDragTarget = null;
+
   interact.default('.node').draggable({
     modifiers,
     listeners: {
       start(event) {
         const el = event.target;
-        el.classList.add('dragging');
+        // Always init drag data to prevent NaN on subsequent drags
         const pos = parseTranslate(el);
         el.dataset.startX = pos.x;
         el.dataset.startY = pos.y;
         el.dataset.dx = '0';
         el.dataset.dy = '0';
+
+        const shiftHeld = event.shiftKey;
+
+        // Shift+Drag in visual mode = draw connection line (not move node)
+        if (editorMode === 'visual' && shiftHeld) {
+          el.dataset.connectionDrag = 'true';
+          el.classList.add('connect-source');
+          const label = getNodeLabel(el);
+          const tab = getActiveTab();
+          const vNode = tab?.visualNodes?.find((n) => n.id === label);
+          if (!vNode) { delete el.dataset.connectionDrag; return; }
+
+          connectMode = true;
+          connectSourceId = vNode.id;
+          _connDragTarget = null;
+          connectBar.classList.add('active');
+
+          // Create temp line from node center
+          const svgEl = canvas.querySelector('svg');
+          if (svgEl) {
+            tempConnectionLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            tempConnectionLine.classList.add('temp-connection-line');
+            const center = getNodeSvgCenter(el);
+            tempConnectionLine.setAttribute('x1', center.x);
+            tempConnectionLine.setAttribute('y1', center.y);
+            tempConnectionLine.setAttribute('x2', center.x);
+            tempConnectionLine.setAttribute('y2', center.y);
+            svgEl.appendChild(tempConnectionLine);
+          }
+          return;
+        }
+
+        // Normal drag
+        el.classList.add('dragging');
       },
       move(event) {
         const el = event.target;
+
+        // Connection drag: update temp line endpoint
+        if (el.dataset.connectionDrag === 'true') {
+          if (tempConnectionLine) {
+            const svgEl = canvas.querySelector('svg');
+            if (svgEl) {
+              const pt = svgEl.createSVGPoint();
+              pt.x = event.clientX;
+              pt.y = event.clientY;
+              const ctm = svgEl.getScreenCTM();
+              if (ctm) {
+                const svgPt = pt.matrixTransform(ctm.inverse());
+                tempConnectionLine.setAttribute('x2', svgPt.x);
+                tempConnectionLine.setAttribute('y2', svgPt.y);
+              }
+            }
+          }
+          // Highlight potential target — scan all nodes by bounding rect
+          canvas.querySelectorAll('.node.connect-target').forEach((n) => n.classList.remove('connect-target'));
+          _connDragTarget = null;
+          canvas.querySelectorAll('.node').forEach((nodeEl) => {
+            if (getNodeLabel(nodeEl) === connectSourceId) return;
+            const rect = nodeEl.getBoundingClientRect();
+            if (event.clientX >= rect.left && event.clientX <= rect.right &&
+                event.clientY >= rect.top && event.clientY <= rect.bottom) {
+              nodeEl.classList.add('connect-target');
+              _connDragTarget = nodeEl;
+            }
+          });
+          return;
+        }
+
+        // Normal drag: move node
         const scale = getSvgScale();
         const dx = parseFloat(el.dataset.dx) + event.dx * scale;
         const dy = parseFloat(el.dataset.dy) + event.dy * scale;
@@ -464,6 +627,31 @@ function attachDragToNodes() {
       },
       end(event) {
         const el = event.target;
+
+        // Connection drag end: use the tracked target node
+        if (el.dataset.connectionDrag === 'true') {
+          delete el.dataset.connectionDrag;
+          el.classList.remove('dragging');
+          const tab = getActiveTab();
+          const targetNode = _connDragTarget;
+          const sourceId = connectSourceId;
+          _connDragTarget = null;
+          exitConnectMode();
+
+          if (targetNode && tab) {
+            const targetLabel = getNodeLabel(targetNode);
+            const targetVNode = tab.visualNodes.find((n) => n.id === targetLabel);
+            if (targetVNode && targetVNode.id !== sourceId) {
+              tab.visualEdges.push({ from: sourceId, to: targetVNode.id, label: '' });
+              syncVisualToCode();
+              renderVisualNodeList();
+              renderVisualEdgeList();
+            }
+          }
+          return;
+        }
+
+        // Normal drag end
         el.classList.remove('dragging');
         const label = getNodeLabel(el);
         const totalDx = parseFloat(el.dataset.dx);
@@ -473,7 +661,10 @@ function attachDragToNodes() {
           const prev = tab.nodePositions.get(label) || { dx: 0, dy: 0 };
           tab.nodePositions.set(label, { dx: prev.dx + totalDx, dy: prev.dy + totalDy });
         }
-        if (Math.abs(totalDx) < 5 && Math.abs(totalDy) < 5) selectNode(el);
+        if (Math.abs(totalDx) < 5 && Math.abs(totalDy) < 5) {
+          suppressNextCanvasNodeClick(label);
+          selectNode(el);
+        }
         scheduleSave();
       },
     },
@@ -504,40 +695,92 @@ function attachClickToNodes() {
   canvas.addEventListener('click', (e) => {
     const nodeEl = e.target.closest('.node');
     if (nodeEl) {
+      if (consumeSuppressedCanvasNodeClick(nodeEl)) { e.stopPropagation(); return; }
       e.stopPropagation();
+      deselectEdge();
       selectNode(nodeEl);
     } else {
+      if (connectMode) exitConnectMode();
       deselectNode();
+      deselectEdge();
+    }
+  });
+  // Double-click to rename node in visual mode
+  canvas.addEventListener('dblclick', (e) => {
+    if (editorMode !== 'visual') return;
+    const nodeEl = e.target.closest('.node');
+    if (!nodeEl) return;
+    e.stopPropagation();
+    const label = getNodeLabel(nodeEl);
+    const tab = getActiveTab();
+    if (!tab) return;
+    const vNode = tab.visualNodes.find((n) => n.id === label);
+    if (!vNode) return;
+    const newLabel = prompt(t('nodeEditPrompt'), vNode.label);
+    if (newLabel !== null && newLabel.trim()) {
+      vNode.label = newLabel.trim();
+      syncVisualToCode();
+      renderVisualNodeList();
     }
   });
 }
 
 function selectNode(nodeEl) {
-  const prev = canvas.querySelector('.node.selected');
-  if (prev) prev.classList.remove('selected');
-  nodeEl.classList.add('selected');
-  const label = getNodeLabel(nodeEl);
   const tab = getActiveTab();
-  if (tab) tab.selectedNodeLabel = label;
+  if (!tab || !nodeEl) return;
+  selectNodes([nodeEl]);
+}
 
-  selectedNodeName.textContent = label;
+function selectNodes(nodeEls) {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  const labels = [...new Set(nodeEls.map((nodeEl) => getNodeLabel(nodeEl)).filter(Boolean))];
+  clearSelectedNodeClasses();
+
+  labels.forEach((label) => {
+    const node = findNodeByLabel(label);
+    if (node) node.classList.add('selected');
+  });
+
+  tab.selectedNodeLabels = labels;
+  tab.selectedNodeLabel = labels[0] || null;
+
+  if (labels.length === 0) {
+    selectedNodeName.textContent = t('noSelection');
+    selectedNodeName.classList.add('no-selection');
+    colorControls.classList.remove('active');
+    return;
+  }
+
   selectedNodeName.classList.remove('no-selection');
-  colorControls.classList.add('active');
+  if (labels.length === 1) {
+    const label = labels[0];
+    selectedNodeName.textContent = label;
+    colorControls.classList.add('active');
 
-  const colors = (tab && tab.nodeColors.get(label)) || readNodeColors(nodeEl);
-  colorBg.value = colors.background;
-  colorBorder.value = colors.border;
-  colorText.value = colors.text;
-  hexBg.textContent = colors.background;
-  hexBorder.textContent = colors.border;
-  hexText.textContent = colors.text;
+    const node = findNodeByLabel(label);
+    const colors = tab.nodeColors.get(label) || (node ? readNodeColors(node) : { background: '#FDF8F0', border: '#C96442', text: '#3D3929' });
+    colorBg.value = colors.background;
+    colorBorder.value = colors.border;
+    colorText.value = colors.text;
+    hexBg.textContent = colors.background;
+    hexBorder.textContent = colors.border;
+    hexText.textContent = colors.text;
+    return;
+  }
+
+  selectedNodeName.textContent = `${labels[0]} +${labels.length - 1}`;
+  colorControls.classList.remove('active');
 }
 
 function deselectNode() {
-  const prev = canvas.querySelector('.node.selected');
-  if (prev) prev.classList.remove('selected');
+  clearSelectedNodeClasses();
   const tab = getActiveTab();
-  if (tab) tab.selectedNodeLabel = null;
+  if (tab) {
+    tab.selectedNodeLabel = null;
+    tab.selectedNodeLabels = [];
+  }
   selectedNodeName.textContent = t('noSelection');
   selectedNodeName.classList.add('no-selection');
   colorControls.classList.remove('active');
@@ -545,9 +788,12 @@ function deselectNode() {
 
 function highlightSelectedNode() {
   const tab = getActiveTab();
-  if (!tab || !tab.selectedNodeLabel) return;
-  const node = findNodeByLabel(tab.selectedNodeLabel);
-  if (node) node.classList.add('selected');
+  if (!tab) return;
+  const labels = (tab.selectedNodeLabels && tab.selectedNodeLabels.length > 0)
+    ? tab.selectedNodeLabels
+    : (tab.selectedNodeLabel ? [tab.selectedNodeLabel] : []);
+  if (labels.length === 0) return;
+  selectNodes(labels.map((label) => findNodeByLabel(label)).filter(Boolean));
 }
 
 // --- Color Management ---
@@ -695,6 +941,12 @@ const canvasPanel = document.getElementById('canvas-panel');
 let viewTransform = { x: 0, y: 0, scale: 1 };
 let isPanning = false;
 let panStart = { x: 0, y: 0 };
+let isMarqueeSelecting = false;
+let marqueeStart = null;
+let marqueeMoved = false;
+const selectionMarquee = document.createElement('div');
+selectionMarquee.className = 'selection-marquee';
+canvasPanel.appendChild(selectionMarquee);
 
 function applyViewTransform() {
   const { x, y, scale } = viewTransform;
@@ -707,6 +959,68 @@ function resetViewTransform() {
   applyViewTransform();
 }
 
+function hideSelectionMarquee() {
+  selectionMarquee.style.display = 'none';
+}
+
+function updateSelectionMarquee(start, current) {
+  const left = Math.min(start.x, current.x);
+  const top = Math.min(start.y, current.y);
+  const width = Math.abs(current.x - start.x);
+  const height = Math.abs(current.y - start.y);
+  selectionMarquee.style.display = 'block';
+  selectionMarquee.style.left = `${left}px`;
+  selectionMarquee.style.top = `${top}px`;
+  selectionMarquee.style.width = `${width}px`;
+  selectionMarquee.style.height = `${height}px`;
+}
+
+function getPanelPoint(event) {
+  const rect = canvasPanel.getBoundingClientRect();
+  return {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+}
+
+function isNodeIntersectingSelection(nodeEl, selectionRect) {
+  const rect = nodeEl.getBoundingClientRect();
+  return !(
+    rect.right < selectionRect.left ||
+    rect.left > selectionRect.right ||
+    rect.bottom < selectionRect.top ||
+    rect.top > selectionRect.bottom
+  );
+}
+
+function finishMarqueeSelection(event) {
+  if (!isMarqueeSelecting) return;
+  isMarqueeSelecting = false;
+  hideSelectionMarquee();
+
+  if (!marqueeMoved || !marqueeStart) {
+    marqueeStart = null;
+    marqueeMoved = false;
+    return;
+  }
+
+  const current = getPanelPoint(event);
+  const panelRect = canvasPanel.getBoundingClientRect();
+  const selectionRect = {
+    left: panelRect.left + Math.min(marqueeStart.x, current.x),
+    right: panelRect.left + Math.max(marqueeStart.x, current.x),
+    top: panelRect.top + Math.min(marqueeStart.y, current.y),
+    bottom: panelRect.top + Math.max(marqueeStart.y, current.y),
+  };
+
+  const nodes = [...canvas.querySelectorAll('.node')].filter((nodeEl) => isNodeIntersectingSelection(nodeEl, selectionRect));
+  if (nodes.length > 0) selectNodes(nodes);
+  else deselectNode();
+
+  marqueeStart = null;
+  marqueeMoved = false;
+}
+
 // Middle mouse button pan
 canvasPanel.addEventListener('mousedown', (e) => {
   if (e.button === 1) { // middle click
@@ -714,14 +1028,30 @@ canvasPanel.addEventListener('mousedown', (e) => {
     isPanning = true;
     panStart = { x: e.clientX - viewTransform.x, y: e.clientY - viewTransform.y };
     canvasPanel.classList.add('panning');
+    return;
   }
+
+  if (e.button !== 0 || e.target.closest('.panel-toggle') || e.target.closest('.node')) return;
+  if (window.getSelection) window.getSelection().removeAllRanges();
+  isMarqueeSelecting = true;
+  marqueeStart = getPanelPoint(e);
+  marqueeMoved = false;
+  updateSelectionMarquee(marqueeStart, marqueeStart);
+  if (connectMode) exitConnectMode();
 });
 
 window.addEventListener('mousemove', (e) => {
-  if (!isPanning) return;
-  viewTransform.x = e.clientX - panStart.x;
-  viewTransform.y = e.clientY - panStart.y;
-  applyViewTransform();
+  if (isPanning) {
+    viewTransform.x = e.clientX - panStart.x;
+    viewTransform.y = e.clientY - panStart.y;
+    applyViewTransform();
+  }
+
+  if (isMarqueeSelecting && marqueeStart) {
+    const current = getPanelPoint(e);
+    marqueeMoved = marqueeMoved || Math.abs(current.x - marqueeStart.x) > 4 || Math.abs(current.y - marqueeStart.y) > 4;
+    updateSelectionMarquee(marqueeStart, current);
+  }
 });
 
 window.addEventListener('mouseup', (e) => {
@@ -729,10 +1059,12 @@ window.addEventListener('mouseup', (e) => {
     isPanning = false;
     canvasPanel.classList.remove('panning');
   }
+  if (e.button === 0) finishMarqueeSelection(e);
 });
 
 // Prevent default middle-click auto-scroll
 canvasPanel.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+canvasPanel.addEventListener('selectstart', (e) => { e.preventDefault(); });
 
 // Ctrl + scroll to zoom
 canvasPanel.addEventListener('wheel', (e) => {
@@ -799,6 +1131,161 @@ editor.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); saveCurrentTabState(); renderDiagram(true); }
 });
 
+// --- Edge Interaction on Canvas ---
+
+let selectedEdgeIndex = null; // index into tab.visualEdges
+
+function deselectEdge() {
+  selectedEdgeIndex = null;
+  canvas.querySelectorAll('.edge-selected').forEach((el) => el.classList.remove('edge-selected'));
+}
+
+function selectEdge(edgeIdx, pathEl) {
+  deselectEdge();
+  deselectNode();
+  selectedEdgeIndex = edgeIdx;
+  if (pathEl) pathEl.classList.add('edge-selected');
+}
+
+function attachEdgeInteractions() {
+  if (editorMode !== 'visual') return;
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  const edgePaths = canvas.querySelectorAll('path.flowchart-link');
+  edgePaths.forEach((pathEl, svgIdx) => {
+    // Find which visual edge this SVG path corresponds to
+    const edgeInfo = tab.edgeMap[svgIdx];
+    if (!edgeInfo) return;
+    const vEdgeIdx = tab.visualEdges.findIndex(
+      (ve) => ve.from === edgeInfo.sourceLabel && ve.to === edgeInfo.targetLabel
+    );
+    if (vEdgeIdx === -1) return;
+
+    // Create wider invisible hit area for easy clicking
+    // Match width to the arrowhead marker for intuitive clicking
+    const hitPath = pathEl.cloneNode(false);
+    hitPath.classList.remove('flowchart-link');
+    hitPath.classList.add('edge-hit-area');
+    hitPath.removeAttribute('id');
+    hitPath.removeAttribute('marker-end');
+    // Detect arrowhead width from marker element
+    const markerRef = pathEl.getAttribute('marker-end') || '';
+    const markerMatch = markerRef.match(/url\(#(.+?)\)/);
+    let hitWidth = 20; // default
+    if (markerMatch) {
+      const marker = canvas.querySelector('#' + CSS.escape(markerMatch[1]));
+      if (marker) {
+        hitWidth = Math.max(hitWidth, parseFloat(marker.getAttribute('markerWidth') || 20) * 2);
+      }
+    }
+    hitPath.style.stroke = 'rgba(0,0,0,0)';
+    hitPath.style.strokeWidth = hitWidth + 'px';
+    pathEl.parentNode.insertBefore(hitPath, pathEl);
+
+    // Click to select edge
+    hitPath.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectEdge(vEdgeIdx, pathEl);
+    });
+
+    // Also click on the visible path
+    pathEl.style.pointerEvents = 'stroke';
+    pathEl.style.cursor = 'pointer';
+    pathEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectEdge(vEdgeIdx, pathEl);
+    });
+
+    // Double-click to edit label
+    function onDblClick(e) {
+      e.stopPropagation();
+      const ve = tab.visualEdges[vEdgeIdx];
+      if (!ve) return;
+
+      // Position the floating editor near the click point
+      const rect = canvasPanel.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      showEdgeLabelEditor(vEdgeIdx, x, y);
+    }
+    hitPath.addEventListener('dblclick', onDblClick);
+    pathEl.addEventListener('dblclick', onDblClick);
+  });
+}
+
+function showEdgeLabelEditor(edgeIdx, x, y) {
+  // Remove any existing editor
+  const existing = canvasPanel.querySelector('.edge-label-editor');
+  if (existing) existing.remove();
+
+  const tab = getActiveTab();
+  if (!tab) return;
+  const edge = tab.visualEdges[edgeIdx];
+  if (!edge) return;
+
+  const input = document.createElement('input');
+  input.className = 'edge-label-editor';
+  input.type = 'text';
+  input.value = edge.label || '';
+  input.placeholder = t('edgeLabelPlaceholder');
+  input.style.left = x + 'px';
+  input.style.top = y + 'px';
+  canvasPanel.appendChild(input);
+  input.focus();
+  input.select();
+
+  function commit() {
+    const newLabel = input.value.trim();
+    input.remove();
+    if (newLabel !== edge.label) {
+      edge.label = newLabel;
+      syncVisualToCode();
+      renderVisualEdgeList();
+    }
+  }
+
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = edge.label || ''; input.blur(); }
+  });
+}
+
+// --- Delete Key Handler ---
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Delete') return;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
+  if (editorMode !== 'visual') return;
+
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  e.preventDefault();
+
+  // Delete selected edge first if any
+  if (selectedEdgeIndex !== null) {
+    tab.visualEdges.splice(selectedEdgeIndex, 1);
+    deselectEdge();
+    syncVisualToCode();
+    renderVisualEdgeList();
+    return;
+  }
+
+  // Delete selected nodes
+  const labels = tab.selectedNodeLabels?.length ? tab.selectedNodeLabels : (tab.selectedNodeLabel ? [tab.selectedNodeLabel] : []);
+  if (labels.length === 0) return;
+
+  for (const nodeId of [...new Set(labels)]) {
+    deleteVisualNode(nodeId, false);
+  }
+  syncVisualToCode();
+  renderVisualEdgeList();
+  deselectNode();
+});
+
 // --- State Persistence ---
 
 const STORAGE_KEY = 'mermaid-editor-state';
@@ -813,9 +1300,15 @@ function serializeState() {
       code: t.code,
       nodeColors: [...t.nodeColors.entries()],
       nodePositions: [...t.nodePositions.entries()],
+      selectedNodeLabels: t.selectedNodeLabels || [],
+      visualNodes: t.visualNodes || [],
+      visualEdges: t.visualEdges || [],
+      visualDirection: t.visualDirection || 'TD',
+      visualIdCounter: t.visualIdCounter || 0,
     })),
     activeTabId,
     tabCounter,
+    editorMode,
     gridSize: parseInt(gridSizeInput.value) || 20,
     showGrid: showGridCheckbox.checked,
     snapEnabled: snapEnabledCheckbox.checked,
@@ -847,8 +1340,13 @@ function loadState() {
       nodeColors: new Map(t.nodeColors || []),
       nodePositions: new Map(t.nodePositions || []),
       selectedNodeLabel: null,
+      selectedNodeLabels: t.selectedNodeLabels || [],
       edgeMap: [],
       renderCounter: 0,
+      visualNodes: t.visualNodes || [],
+      visualEdges: t.visualEdges || [],
+      visualDirection: t.visualDirection || 'TD',
+      visualIdCounter: t.visualIdCounter || 0,
     }));
 
     // Recalculate tabCounter from max existing id to avoid collisions
@@ -880,6 +1378,11 @@ function loadState() {
       applyI18n();
     }
 
+    // Restore editor mode
+    if (state.editorMode) {
+      setEditorMode(state.editorMode);
+    }
+
     renderTabBar();
     updateGrid();
     renderDiagram(true);
@@ -907,6 +1410,450 @@ langSelect.addEventListener('change', (e) => {
     selectedNodeName.textContent = t('noSelection');
   }
   scheduleSave();
+});
+
+// --- Visual Editor: Mode Switching ---
+
+function setEditorMode(mode) {
+  editorMode = mode;
+  if (mode === 'code') {
+    modeCodeBtn.classList.add('active');
+    modeVisualBtn.classList.remove('active');
+    codePanel.classList.remove('hidden');
+    visualPanel.classList.remove('active');
+    exitConnectMode();
+  } else {
+    modeVisualBtn.classList.add('active');
+    modeCodeBtn.classList.remove('active');
+    codePanel.classList.add('hidden');
+    visualPanel.classList.add('active');
+    // Always re-parse current code to rebuild visual model
+    // (code may have changed in code mode, or localStorage may be stale)
+    const tab = getActiveTab();
+    if (tab) {
+      parseCodeToVisualModel(tab);
+    }
+    renderVisualNodeList();
+    renderVisualEdgeList();
+    // Sync direction select
+    if (tab) visualDirectionSelect.value = tab.visualDirection || 'TD';
+  }
+  scheduleSave();
+}
+
+modeCodeBtn.addEventListener('click', () => setEditorMode('code'));
+modeVisualBtn.addEventListener('click', () => setEditorMode('visual'));
+
+// --- Visual Editor: Code Generation ---
+
+function generateNodeSyntax(node) {
+  const label = node.label;
+  switch (node.type) {
+    case 'process':    return `${node.id}[${label}]`;
+    case 'decision':   return `${node.id}{${label}}`;
+    case 'terminal':   return `${node.id}([${label}])`;
+    case 'io':         return `${node.id}[/${label}/]`;
+    case 'subroutine': return `${node.id}[[${label}]]`;
+    case 'database':   return `${node.id}[(${label})]`;
+    default:           return `${node.id}[${label}]`;
+  }
+}
+
+function generateMermaidCode(tab) {
+  if (!tab) return '';
+  const dir = tab.visualDirection || 'TD';
+  const lines = [`flowchart ${dir}`];
+
+  // Define all nodes first
+  for (const node of tab.visualNodes) {
+    lines.push(`    ${generateNodeSyntax(node)}`);
+  }
+
+  // Then all edges
+  for (const edge of tab.visualEdges) {
+    if (edge.label) {
+      lines.push(`    ${edge.from} -->|${edge.label}| ${edge.to}`);
+    } else {
+      lines.push(`    ${edge.from} --> ${edge.to}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function syncVisualToCode() {
+  const tab = getActiveTab();
+  if (!tab) return;
+  const code = generateMermaidCode(tab);
+  tab.code = code;
+  editor.value = code;
+  // Graph structure changed — old position deltas are invalid for the new layout.
+  tab.nodePositions.clear();
+  renderDiagram(false);
+  scheduleSave();
+}
+
+// --- Visual Editor: Parse Code to Visual Model ---
+
+function parseCodeToVisualModel(tab) {
+  const code = tab.code || '';
+  const lines = code.split('\n');
+  tab.visualNodes = [];
+  tab.visualEdges = [];
+  tab.visualIdCounter = 0;
+
+  // Detect direction from first line
+  const dirMatch = code.match(/flowchart\s+(TD|TB|BT|LR|RL)/i);
+  if (dirMatch) {
+    tab.visualDirection = dirMatch[1].toUpperCase();
+    if (tab.visualDirection === 'TB') tab.visualDirection = 'TD';
+  }
+
+  const knownNodes = new Map(); // id -> {id, type, label}
+
+  function detectNodeType(fullDef) {
+    // Check shape syntax to determine type
+    if (/^\w+\(\[.*\]\)/.test(fullDef)) return 'terminal';
+    if (/^\w+\[\[.*\]\]/.test(fullDef)) return 'subroutine';
+    if (/^\w+\[\(.*\)\]/.test(fullDef)) return 'database';
+    if (/^\w+\[\/.*\/\]/.test(fullDef)) return 'io';
+    if (/^\w+\{.*\}/.test(fullDef)) return 'decision';
+    if (/^\w+\[.*\]/.test(fullDef)) return 'process';
+    return 'process';
+  }
+
+  function extractLabel(fullDef) {
+    let m;
+    if ((m = fullDef.match(/^\w+\(\[(.*)\]\)/s))) return m[1];
+    if ((m = fullDef.match(/^\w+\[\[(.*)\]\]/s))) return m[1];
+    if ((m = fullDef.match(/^\w+\[\((.*)\)\]/s))) return m[1];
+    if ((m = fullDef.match(/^\w+\[\/(.*?)\/\]/s))) return m[1];
+    if ((m = fullDef.match(/^\w+\{(.*)\}/s))) return m[1];
+    if ((m = fullDef.match(/^\w+\[(.*)\]/s))) return m[1];
+    return fullDef;
+  }
+
+  function extractNodeId(def) {
+    const m = def.match(/^(\w+)/);
+    return m ? m[1] : def;
+  }
+
+  function ensureNode(def) {
+    const id = extractNodeId(def);
+    if (!knownNodes.has(id)) {
+      const type = detectNodeType(def);
+      const label = def === id ? id : extractLabel(def);
+      const node = { id, type, label };
+      knownNodes.set(id, node);
+      tab.visualNodes.push(node);
+    }
+    return id;
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || /^flowchart\s/i.test(trimmed) || /^%%/.test(trimmed)) continue;
+
+    // Try to parse edge: A[...] --> B[...] or A -->|label| B
+    // Complex regex to handle node definitions with brackets in edge lines
+    const edgePattern = /^(.+?)\s*(-->|---|-\.-|==>)\s*(?:\|([^|]*)\|\s*)?(.+)$/;
+    const edgeMatch = trimmed.match(edgePattern);
+
+    if (edgeMatch) {
+      const fromDef = edgeMatch[1].trim();
+      const toDef = edgeMatch[4].trim();
+      const edgeLabel = edgeMatch[3] ? edgeMatch[3].trim() : '';
+
+      const fromId = ensureNode(fromDef);
+      const toId = ensureNode(toDef);
+
+      tab.visualEdges.push({ from: fromId, to: toId, label: edgeLabel });
+    } else {
+      // Standalone node definition
+      ensureNode(trimmed);
+    }
+  }
+
+  // Set visualIdCounter to avoid collisions
+  let maxNum = 0;
+  for (const node of tab.visualNodes) {
+    const m = node.id.match(/^[A-Z]*(\d+)$/);
+    if (m) maxNum = Math.max(maxNum, parseInt(m[1]));
+  }
+  tab.visualIdCounter = maxNum;
+}
+
+// --- Visual Editor: Generate Unique Node ID ---
+
+function nextNodeId(tab) {
+  tab.visualIdCounter++;
+  // Generate IDs like N1, N2, ... to avoid collisions with parsed IDs
+  return `N${tab.visualIdCounter}`;
+}
+
+// --- Visual Editor: Toolbox Drag & Drop ---
+
+let dragGhost = null;
+let dragNodeType = null;
+
+document.querySelectorAll('.toolbox-item').forEach((item) => {
+  item.addEventListener('dragstart', (e) => {
+    dragNodeType = item.dataset.nodeType;
+    // Create ghost
+    dragGhost = item.cloneNode(true);
+    dragGhost.classList.add('drag-ghost');
+    dragGhost.style.width = '80px';
+    document.body.appendChild(dragGhost);
+    e.dataTransfer.setDragImage(dragGhost, 40, 20);
+    e.dataTransfer.setData('text/plain', dragNodeType);
+    e.dataTransfer.effectAllowed = 'copy';
+  });
+
+  item.addEventListener('dragend', () => {
+    if (dragGhost) {
+      dragGhost.remove();
+      dragGhost = null;
+    }
+    dragNodeType = null;
+    canvasPanel.classList.remove('drop-hover');
+  });
+});
+
+canvasPanel.addEventListener('dragover', (e) => {
+  if (editorMode !== 'visual') return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+  canvasPanel.classList.add('drop-hover');
+});
+
+canvasPanel.addEventListener('dragleave', (e) => {
+  canvasPanel.classList.remove('drop-hover');
+});
+
+canvasPanel.addEventListener('drop', (e) => {
+  e.preventDefault();
+  canvasPanel.classList.remove('drop-hover');
+  if (editorMode !== 'visual') return;
+
+  const nodeType = e.dataTransfer.getData('text/plain');
+  if (!nodeType) return;
+
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  const nodeId = nextNodeId(tab);
+  const typeNames = {
+    process: t('toolProcess'),
+    decision: t('toolDecision'),
+    terminal: t('toolTerminal'),
+    io: t('toolIO'),
+    subroutine: t('toolSubroutine'),
+    database: t('toolDatabase'),
+  };
+  const label = `${typeNames[nodeType] || nodeType} ${tab.visualNodes.length + 1}`;
+
+  tab.visualNodes.push({ id: nodeId, type: nodeType, label });
+
+  syncVisualToCode();
+  renderVisualNodeList();
+  renderVisualEdgeList();
+});
+
+// --- Visual Editor: Node List ---
+
+function renderVisualNodeList() {
+  const tab = getActiveTab();
+  if (!tab) { visualNodeList.innerHTML = ''; return; }
+
+  visualNodeList.innerHTML = '';
+
+  for (const node of tab.visualNodes) {
+    const item = document.createElement('div');
+    item.className = 'visual-node-item';
+
+    const badge = document.createElement('span');
+    badge.className = 'node-type-badge';
+    const typeKeys = {
+      process: 'toolProcess', decision: 'toolDecision', terminal: 'toolTerminal',
+      io: 'toolIO', subroutine: 'toolSubroutine', database: 'toolDatabase'
+    };
+    badge.textContent = t(typeKeys[node.type] || 'toolProcess');
+    item.appendChild(badge);
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'node-label-text';
+    labelSpan.textContent = node.label;
+    labelSpan.title = t('nodeEditPrompt');
+    item.appendChild(labelSpan);
+
+    // Double-click to rename
+    labelSpan.addEventListener('dblclick', () => {
+      labelSpan.contentEditable = 'true';
+      labelSpan.focus();
+      const range = document.createRange();
+      range.selectNodeContents(labelSpan);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+
+    labelSpan.addEventListener('blur', () => {
+      labelSpan.contentEditable = 'false';
+      const newLabel = labelSpan.textContent.trim();
+      if (newLabel && newLabel !== node.label) {
+        node.label = newLabel;
+        syncVisualToCode();
+      } else {
+        labelSpan.textContent = node.label;
+      }
+    });
+
+    labelSpan.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); labelSpan.blur(); }
+    });
+
+    const deleteBtn = document.createElement('span');
+    deleteBtn.className = 'node-delete-btn';
+    deleteBtn.textContent = '\u00d7';
+    deleteBtn.title = t('deleteNode');
+    deleteBtn.addEventListener('click', () => {
+      deleteVisualNode(node.id);
+    });
+    item.appendChild(deleteBtn);
+
+    visualNodeList.appendChild(item);
+  }
+}
+
+function deleteVisualNode(nodeId, sync = true) {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.visualNodes = tab.visualNodes.filter((n) => n.id !== nodeId);
+  tab.visualEdges = tab.visualEdges.filter((e) => e.from !== nodeId && e.to !== nodeId);
+  tab.selectedNodeLabels = (tab.selectedNodeLabels || []).filter((label) => label !== nodeId);
+  if (tab.selectedNodeLabel === nodeId) {
+    tab.selectedNodeLabel = tab.selectedNodeLabels[0] || null;
+  }
+  if (sync) syncVisualToCode();
+  renderVisualNodeList();
+  renderVisualEdgeList();
+}
+
+// --- Visual Editor: Edge List ---
+
+const visualEdgeList = document.getElementById('visual-edge-list');
+
+function renderVisualEdgeList() {
+  const tab = getActiveTab();
+  if (!tab) { visualEdgeList.innerHTML = ''; return; }
+
+  visualEdgeList.innerHTML = '';
+
+  tab.visualEdges.forEach((edge, idx) => {
+    const item = document.createElement('div');
+    item.className = 'visual-edge-item';
+
+    // From node
+    const fromSpan = document.createElement('span');
+    fromSpan.className = 'edge-nodes';
+    fromSpan.textContent = edge.from;
+    item.appendChild(fromSpan);
+
+    // Arrow
+    const arrow = document.createElement('span');
+    arrow.className = 'edge-arrow';
+    arrow.textContent = ' → ';
+    item.appendChild(arrow);
+
+    // To node
+    const toSpan = document.createElement('span');
+    toSpan.className = 'edge-nodes';
+    toSpan.textContent = edge.to;
+    item.appendChild(toSpan);
+
+    // Label (editable)
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'edge-label-text';
+    labelSpan.textContent = edge.label || '';
+    labelSpan.title = t('edgeLabelPlaceholder');
+    item.appendChild(labelSpan);
+
+    // Double-click to edit label
+    labelSpan.addEventListener('dblclick', () => {
+      labelSpan.contentEditable = 'true';
+      labelSpan.focus();
+      const range = document.createRange();
+      range.selectNodeContents(labelSpan);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+
+    labelSpan.addEventListener('blur', () => {
+      labelSpan.contentEditable = 'false';
+      const newLabel = labelSpan.textContent.trim();
+      if (newLabel !== edge.label) {
+        edge.label = newLabel;
+        syncVisualToCode();
+      }
+    });
+
+    labelSpan.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); labelSpan.blur(); }
+    });
+
+    // Delete button
+    const deleteBtn = document.createElement('span');
+    deleteBtn.className = 'edge-delete-btn';
+    deleteBtn.textContent = '\u00d7';
+    deleteBtn.title = t('deleteEdge');
+    deleteBtn.addEventListener('click', () => {
+      tab.visualEdges.splice(idx, 1);
+      syncVisualToCode();
+      renderVisualEdgeList();
+    });
+    item.appendChild(deleteBtn);
+
+    visualEdgeList.appendChild(item);
+  });
+}
+
+// --- Visual Editor: Shift+Click Connection ---
+// Shift+click node A → highlight as source → click node B → create edge
+// Works through interact.js drag-end (small movement = click) path
+
+let connectMode = false;
+let connectSourceId = null;
+let tempConnectionLine = null;
+
+function exitConnectMode() {
+  connectMode = false;
+  connectSourceId = null;
+  connectBar.classList.remove('active');
+  if (tempConnectionLine) {
+    tempConnectionLine.remove();
+    tempConnectionLine = null;
+  }
+  canvas.querySelectorAll('.node.connect-source').forEach((n) => n.classList.remove('connect-source'));
+  canvas.querySelectorAll('.node.connect-target').forEach((n) => n.classList.remove('connect-target'));
+}
+
+btnConnectCancel.addEventListener('click', exitConnectMode);
+
+// Cancel connection with Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && connectMode) {
+    exitConnectMode();
+  }
+});
+
+// --- Visual Editor: Direction Change ---
+
+visualDirectionSelect.addEventListener('change', () => {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.visualDirection = visualDirectionSelect.value;
+  syncVisualToCode();
 });
 
 // --- Panel Collapse ---
