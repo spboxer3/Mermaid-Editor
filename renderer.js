@@ -37,7 +37,7 @@ const visualNodeList = document.getElementById('visual-node-list');
 const langSelect = document.getElementById('lang-select');
 
 // --- Editor Mode ---
-let editorMode = 'code'; // 'code' or 'visual'
+let editorMode = 'visual'; // 'code' or 'visual'
 
 function getDefaultCode() {
   return t('defaultCode');
@@ -705,30 +705,65 @@ function attachClickToNodes() {
       deselectEdge();
     }
   });
-  // Double-click to rename node in visual mode
-  canvas.addEventListener('dblclick', (e) => {
-    if (editorMode !== 'visual') return;
-    const nodeEl = e.target.closest('.node');
-    if (!nodeEl) return;
-    e.stopPropagation();
-    const label = getNodeLabel(nodeEl);
-    const tab = getActiveTab();
-    if (!tab) return;
-    const vNode = tab.visualNodes.find((n) => n.id === label);
-    if (!vNode) return;
-    const newLabel = prompt(t('nodeEditPrompt'), vNode.label);
-    if (newLabel !== null && newLabel.trim()) {
-      vNode.label = newLabel.trim();
-      syncVisualToCode();
-      renderVisualNodeList();
-    }
-  });
+  // Second click on already-selected node → inline edit label on canvas
+  // (interact.js drag-end with small movement calls selectNode; if it's already selected, edit)
+
 }
 
 function selectNode(nodeEl) {
   const tab = getActiveTab();
   if (!tab || !nodeEl) return;
+
+  // Second click on already-selected node in visual mode → inline edit
+  if (editorMode === 'visual' && nodeEl.classList.contains('selected')) {
+    const label = getNodeLabel(nodeEl);
+    const vNode = tab.visualNodes.find((n) => n.id === label);
+    if (vNode) {
+      showNodeLabelEditor(nodeEl, vNode);
+      return;
+    }
+  }
+
   selectNodes([nodeEl]);
+}
+
+function showNodeLabelEditor(nodeEl, vNode) {
+  // Remove any existing editor
+  const existing = canvasPanel.querySelector('.edge-label-editor');
+  if (existing) existing.remove();
+
+  // Position at node center in viewport coords
+  const rect = nodeEl.getBoundingClientRect();
+  const panelRect = canvasPanel.getBoundingClientRect();
+  const x = rect.left + rect.width / 2 - panelRect.left;
+  const y = rect.top + rect.height / 2 - panelRect.top;
+
+  const input = document.createElement('input');
+  input.className = 'edge-label-editor';
+  input.type = 'text';
+  input.value = vNode.label || '';
+  input.placeholder = t('nodeEditPrompt');
+  input.style.left = x + 'px';
+  input.style.top = y + 'px';
+  canvasPanel.appendChild(input);
+  input.focus();
+  input.select();
+
+  function commit() {
+    const newLabel = input.value.trim();
+    input.remove();
+    if (newLabel && newLabel !== vNode.label) {
+      vNode.label = newLabel;
+      syncVisualToCode();
+      renderVisualNodeList();
+    }
+  }
+
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = vNode.label || ''; input.blur(); }
+  });
 }
 
 function selectNodes(nodeEls) {
@@ -1878,5 +1913,15 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!loadState()) {
     applyI18n();
     addTab(`${t('defaultTabName')} 1`, getDefaultCode());
+  }
+  // Ensure visual mode is initialized (parse code into visual model)
+  if (editorMode === 'visual') {
+    const tab = getActiveTab();
+    if (tab) {
+      parseCodeToVisualModel(tab);
+      renderVisualNodeList();
+      renderVisualEdgeList();
+      if (tab) visualDirectionSelect.value = tab.visualDirection || 'TD';
+    }
   }
 });

@@ -29,6 +29,7 @@
       "i18n.js",
       "node_modules/**/*"
     ],
+    "compression": "normal",
     "win": {
       "target": "portable",
       "icon": "icon.png"

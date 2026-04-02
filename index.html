@@ -655,119 +655,6 @@
       gap: 6px;
     }
 
-    .visual-node-list {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      max-height: 150px;
-      overflow-y: auto;
-    }
-
-    .visual-node-item {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 8px;
-      font-size: 11px;
-      background: var(--bg-primary);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-    }
-
-    .visual-node-item .node-type-badge {
-      font-size: 9px;
-      padding: 1px 4px;
-      border-radius: 3px;
-      background: var(--accent-light);
-      color: var(--accent);
-      font-weight: 600;
-    }
-
-    .visual-node-item .node-label-text {
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .visual-node-item .node-delete-btn {
-      cursor: pointer;
-      color: var(--text-muted);
-      font-size: 13px;
-      padding: 0 2px;
-      border-radius: 3px;
-    }
-
-    .visual-node-item .node-delete-btn:hover {
-      color: #C04030;
-      background: #fde8e5;
-    }
-
-    /* Edge list */
-    .visual-edge-list {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      max-height: 150px;
-      overflow-y: auto;
-    }
-
-    .visual-edge-item {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 8px;
-      font-size: 11px;
-      background: var(--bg-primary);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-    }
-
-    .visual-edge-item .edge-nodes {
-      color: var(--text-secondary);
-      white-space: nowrap;
-      font-weight: 600;
-    }
-
-    .visual-edge-item .edge-arrow {
-      color: var(--text-muted);
-    }
-
-    .visual-edge-item .edge-label-text {
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      color: var(--purple);
-      font-style: italic;
-      min-width: 20px;
-    }
-
-    .visual-edge-item .edge-label-text:empty::before {
-      content: '—';
-      color: var(--text-muted);
-    }
-
-    .visual-edge-item .edge-label-text[contenteditable="true"] {
-      outline: 1px solid var(--accent);
-      border-radius: 2px;
-      padding: 0 2px;
-      font-style: normal;
-    }
-
-    .visual-edge-item .edge-delete-btn {
-      cursor: pointer;
-      color: var(--text-muted);
-      font-size: 13px;
-      padding: 0 2px;
-      border-radius: 3px;
-      flex-shrink: 0;
-    }
-
-    .visual-edge-item .edge-delete-btn:hover {
-      color: #C04030;
-      background: #fde8e5;
-    }
 
     /* Connection mode indicator */
     .connect-bar {
@@ -880,12 +767,12 @@
 
     <!-- Mode Toggle -->
     <div class="mode-toggle">
-      <button id="mode-code" class="active" data-i18n="modeCode">程式碼</button>
-      <button id="mode-visual" data-i18n="modeVisual">視覺化</button>
+      <button id="mode-code" data-i18n="modeCode">程式碼</button>
+      <button id="mode-visual" class="active" data-i18n="modeVisual">視覺化</button>
     </div>
 
-    <!-- Code Mode -->
-    <div id="code-panel">
+    <!-- Code Mode (hidden by default) -->
+    <div id="code-panel" class="hidden">
       <textarea id="editor"></textarea>
       <div class="btn-row">
         <button class="btn btn-primary" id="btn-render" data-i18n="render">渲染</button>
@@ -893,8 +780,8 @@
       </div>
     </div>
 
-    <!-- Visual Mode -->
-    <div id="visual-panel">
+    <!-- Visual Mode (active by default) -->
+    <div id="visual-panel" class="active">
       <div class="direction-row">
         <label data-i18n="visualDirection">方向：</label>
         <select id="visual-direction">
@@ -941,17 +828,9 @@
         <button id="btn-connect-cancel" data-i18n="connectCancel">取消</button>
       </div>
 
-      <hr class="section-divider">
-
-      <!-- Visual node list -->
-      <h3 style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;" data-i18n="nodeListTitle">節點列表</h3>
-      <div class="visual-node-list" id="visual-node-list"></div>
-
-      <hr class="section-divider">
-
-      <!-- Visual edge list -->
-      <h3 style="font-size:11px; color:var(--text-muted); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;" data-i18n="edgeListTitle">連線列表</h3>
-      <div class="visual-edge-list" id="visual-edge-list"></div>
+      <!-- Hidden containers kept for JS compatibility -->
+      <div id="visual-node-list" style="display:none"></div>
+      <div id="visual-edge-list" style="display:none"></div>
     </div>
 
     <hr class="section-divider">
