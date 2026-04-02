@@ -1,6 +1,6 @@
 {
   "name": "mermaid-editor",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Mermaid diagram editor with drag-and-drop, grid snap, and custom colors",
   "main": "main.js",
   "scripts": {
@@ -27,12 +27,40 @@
       "index.html",
       "renderer.js",
       "i18n.js",
-      "node_modules/**/*"
+      "icon.ico",
+      "node_modules/mermaid/**/*",
+      "node_modules/interactjs/**/*",
+      "node_modules/@interactjs/**/*",
+      "node_modules/d3*/**/*",
+      "node_modules/@braintree/**/*",
+      "node_modules/@chevrotain/**/*",
+      "node_modules/chevrotain/**/*",
+      "node_modules/@types/d3*/**/*",
+      "node_modules/dagre-d3-es/**/*",
+      "node_modules/dayjs/**/*",
+      "node_modules/dompurify/**/*",
+      "node_modules/elkjs/**/*",
+      "node_modules/katex/**/*",
+      "node_modules/khroma/**/*",
+      "node_modules/lodash-es/**/*",
+      "node_modules/marked/**/*",
+      "node_modules/roughjs/**/*",
+      "node_modules/stylis/**/*",
+      "node_modules/ts-dedent/**/*",
+      "node_modules/uuid/**/*",
+      "node_modules/cytoscape*/**/*",
+      "node_modules/cose-base/**/*",
+      "node_modules/layout-base/**/*",
+      "node_modules/commander/**/*",
+      "node_modules/robust-predicates/**/*",
+      "node_modules/internmap/**/*",
+      "node_modules/delaunator/**/*"
     ],
-    "compression": "normal",
+    "compression": "store",
+    "asar": true,
     "win": {
       "target": "portable",
-      "icon": "icon.png"
+      "icon": "icon.ico"
     }
   }
 }
